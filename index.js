@@ -400,9 +400,60 @@
         if (el) el.textContent = text;
     }
 
+    function injectMinimizeIfMissing(root) {
+    if (!root) return;
+
+    // already present
+    if (root.querySelector("#cl_btn_min")) return;
+
+    const actions = root.querySelector("#cl_ui_actions");
+    const body = root.querySelector("#cl_ui_body");
+    if (!actions || !body) return;
+
+    const btnMin = document.createElement("button");
+    btnMin.type = "button";
+    btnMin.id = "cl_btn_min";
+
+    // style identical to mkBtn(...)
+    btnMin.style.height = "34px";
+    btnMin.style.padding = "0 14px";
+    btnMin.style.borderRadius = "10px";
+    btnMin.style.border = "1px solid rgba(16, 6, 159, 0.25)";
+    btnMin.style.background = "white";
+    btnMin.style.color = "#10069f";
+    btnMin.style.font = "13px/1 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif";
+    btnMin.style.cursor = "pointer";
+    btnMin.style.display = "inline-flex";
+    btnMin.style.alignItems = "center";
+
+    // insert before Reset if possible
+    const resetBtn = actions.querySelector("#cl_btn_reset");
+    if (resetBtn) actions.insertBefore(btnMin, resetBtn);
+    else actions.appendChild(btnMin);
+
+    let minimized = localStorage.getItem("cl_ui_minimized") === "1";
+
+    const applyMinState = () => {
+        body.style.display = minimized ? "none" : "flex";
+        btnMin.textContent = minimized ? "Expand" : "Minimize";
+    };
+
+    applyMinState();
+
+    btnMin.addEventListener("click", () => {
+        minimized = !minimized;
+        localStorage.setItem("cl_ui_minimized", minimized ? "1" : "0");
+        applyMinState();
+    });
+}
+
+
     function ensureUI(mount) {
         let root = document.getElementById(CFG.uiId);
-        if (root) return root;
+        if (root) {
+            injectMinimizeIfMissing(root);
+            return root;
+        }
 
         const mkBtn = (txt, primary) => {
             const b = document.createElement("button");
@@ -421,6 +472,7 @@
 
         const mkSelect = (id, label, opts, defVal) => {
             const wrap = document.createElement("div");
+            
             wrap.style.display = "flex";
             wrap.style.flexDirection = "column";
             wrap.style.gap = "4px";
@@ -493,6 +545,7 @@
         title.style.fontWeight = "800";
 
         const actions = document.createElement("div");
+        actions.id = "cl_ui_actions";
         actions.style.display = "flex";
         actions.style.gap = "8px";
         actions.style.flexWrap = "wrap";
