@@ -960,6 +960,23 @@
         notify(container, "ret time selected");
     }
 
+    function readStepperValue(controlsEl) {
+        if (!controlsEl) return NaN;
+    
+        // Most reliable: find standalone text node between buttons (e.g. " 1 ")
+        const rawTextNodes = Array.from(controlsEl.childNodes)
+            .filter((n) => n.nodeType === Node.TEXT_NODE)
+            .map((n) => (n.textContent || "").trim())
+            .join(" ");
+    
+        let m = rawTextNodes.match(/\b\d+\b/);
+    
+        // Fallback: parse from full textContent if text nodes were merged/empty
+        if (!m) m = (controlsEl.textContent || "").match(/\b\d+\b/);
+    
+        return m ? parseInt(m[0], 10) : NaN;
+    }
+    
     async function step_passengers_searchpage(container, panel, wrapper) {
         panelAction(panel, "Search: adding 1 Adult passenger");
         panelLog(panel, "info", "Opening passengers panel and clicking Adult + then Done");
@@ -967,6 +984,35 @@
         const btn = findPassengersBtn(wrapper);
         if (!btn) fail(container, panel, "Passengers button not found");
         await clickHumanPaced(btn);
+
+        const controls = adultLi.querySelector("div.flex.items-center.justify-center.text-blue-primary");
+        if (!controls) fail(container, panel, "Adult controls container not found");
+        
+        // ✅ NEW: if already 1 adult, do not click +
+        const currentAdult = readStepperValue(controls);
+        
+        if (Number.isFinite(currentAdult) && currentAdult >= 1) {
+            panelLog(panel, "info", `Adult already selected (${currentAdult}) -> skipping +`);
+            notify(container, `Adult already = ${currentAdult} (skip add)`);
+        } else {
+            const plusBtn = findButtonContainingSvg(controls, "svg.h-7"); // your existing selector for +
+            if (!plusBtn) fail(container, panel, "Adult plus control not found");
+        
+            panelLog(panel, "info", `Adult currently = ${Number.isFinite(currentAdult) ? currentAdult : "?"} -> clicking +`);
+            await clickHumanPaced(plusBtn);
+            notify(container, "Adult added");
+        }
+
+        // ✅ keep your existing "Done" click below (must still run)
+        const doneBtn = await W(() => {
+            const b = list.querySelector("button.bg-blue-primary.hover\\:bg-blue-700.rounded-xl.text-white.font-serif");
+            return b && visible(b) ? b : null;
+        }, { timeoutMs: delayLoadMs() });
+        
+        if (!doneBtn) fail(container, panel, "Passengers Done button not found");
+        
+        await clickHumanPaced(doneBtn);
+
 
         const list = await WV("ul.list-none.m-4.md\\:m-0.w-full.p-0.flex.flex-col", { timeoutMs: delayLoadMs() });
         if (!list) fail(container, panel, "Passengers list not found");
