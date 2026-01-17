@@ -500,6 +500,12 @@
         const btnGo = mkBtn("GO", true);
         const btnNext = mkBtn("Next step", false);
         const btnReset = mkBtn("Reset", false);
+        const btnMin = mkBtn("Minimize", false);
+
+        btnGo.id = "cl_btn_go";
+        btnNext.id = "cl_btn_next";
+        btnReset.id = "cl_btn_reset";
+        btnMin.id = "cl_btn_min";
 
         btnGo.id = "cl_btn_go";
         btnNext.id = "cl_btn_next";
@@ -507,6 +513,7 @@
 
         actions.appendChild(btnGo);
         actions.appendChild(btnNext);
+        actions.appendChild(btnMin);
         actions.appendChild(btnReset);
 
         top.appendChild(title);
@@ -538,14 +545,41 @@
 
         footer.appendChild(status);
 
-        wrap.appendChild(top);
-        wrap.appendChild(grid);
-        wrap.appendChild(footer);
+        const body = document.createElement("div");
+        body.id = "cl_ui_body";
+        body.style.display = "flex";
+        body.style.flexDirection = "column";
+        body.style.gap = "10px";
 
-        panelEnsureLog(wrap);
+        body.appendChild(grid);
+        body.appendChild(footer);
+
+        // move log inside body (so it hides when minimized)
+        panelEnsureLog(body);
+
+        wrap.appendChild(top);
+        wrap.appendChild(body);
 
         root.appendChild(wrap);
         mount.insertBefore(root, mount.firstChild);
+
+        let minimized = localStorage.getItem("cl_ui_minimized") === "1";
+
+        const applyMinState = () => {
+            const bodyEl = body; // from the snippet above
+            if (!bodyEl) return;
+
+            bodyEl.style.display = minimized ? "none" : "flex";
+            btnMin.textContent = minimized ? "Expand" : "Minimize";
+        };
+
+        applyMinState();
+
+        btnMin.addEventListener("click", () => {
+            minimized = !minimized;
+            localStorage.setItem("cl_ui_minimized", minimized ? "1" : "0");
+            applyMinState();
+        });
 
         btnReset.addEventListener("click", () => {
             Runner.reset();
@@ -1020,7 +1054,7 @@
 
         notifHost(mountEl);
         const ui = ensureUI(mountEl);
-        const panel = ui.querySelector("div");
+        const panel = ui.querySelector("#cl_ui_body") || ui.querySelector("div");
         panelEnsureLog(panel);
 
         startAdOverlayGuard(panel);
