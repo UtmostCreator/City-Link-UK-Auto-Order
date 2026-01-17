@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Citylink Booking Helper (Search -> Details, UI + Next/GO + Panel Log)
 // @namespace    local.citylink.booking.helper
-// @version      2026-01-17.6
-// @description  Citylink booking automation with UI, Next/GO buttons, notifications, and in-panel logging across SPA pages. (Stops before payment)
+// @version      2026-01-17.7
+// @description  Citylink booking automation with UI, Next/GO buttons, Pause/Resume, Minimize, notifications, and in-panel logging across SPA pages. (Stops at payment)
 // @match        https://booking.citylink.co.uk/*
 // @run-at       document-end
 // @noframes
@@ -69,7 +69,6 @@
     const eq = (a, b) => norm(a).toLowerCase() === norm(b).toLowerCase();
     const visible = (el) => !!(el && (el.offsetParent !== null || el.getClientRects().length));
 
-    // wait-for helper
     async function W(selOrFn, opt = {}) {
         const timeoutMs = opt.timeoutMs ?? CFG.waitMs;
         const pollMs = opt.pollMs ?? CFG.pollMs;
@@ -102,174 +101,27 @@
     }
 
     // =========================================================
-    // Pacing + Human click
+    // Runner state (Pause/Resume)
     // =========================================================
-    let __cl_lastActionAt = 0;
+    const Runner = {
+        busy: false,
+        paused: localStorage.getItem("cl_paused") === "1",
 
-    async function pace(minGapMs) {
-        const gap = typeof minGapMs === "number" ? minGapMs : delayInteractionMs();
-        const now = Date.now();
-        const wait = __cl_lastActionAt + gap - now;
-        if (wait > 0) await S(wait);
-        __cl_lastActionAt = Date.now();
-    }
+        setPaused(v) {
+            this.paused = !!v;
+            localStorage.setItem("cl_paused", this.paused ? "1" : "0");
+        },
 
-    async function clickHumanPaced(el) {
-        if (!el) return false;
-        await pace();
+        togglePaused() {
+            this.setPaused(!this.paused);
+            return this.paused;
+        },
 
-        try {
-            el.scrollIntoView({ block: "center", inline: "center" });
-        } catch {}
-
-        const r = el.getBoundingClientRect();
-        const x = r.left + r.width * (0.30 + Math.random() * 0.40);
-        const y = r.top + r.height * (0.30 + Math.random() * 0.40);
-
-        const win = el.ownerDocument?.defaultView || document.defaultView;
-        const ev = (t) =>
-        new MouseEvent(t, {
-            bubbles: true,
-            cancelable: true,
-            view: win,
-            clientX: x,
-            clientY: y,
-        });
-
-        el.dispatchEvent(ev("mousemove"));
-        el.dispatchEvent(ev("mouseover"));
-        el.dispatchEvent(ev("mouseenter"));
-        el.dispatchEvent(ev("mousedown"));
-        await S(randInt(35, 120));
-        el.dispatchEvent(ev("mouseup"));
-        el.dispatchEvent(ev("click"));
-        return true;
-    }
-
-    // =========================================================
-    // Native input typing (for autocomplete)
-    // =========================================================
-    function setNativeValue(el, value) {
-        if (!el) return;
-        const proto = Object.getPrototypeOf(el);
-        const desc = Object.getOwnPropertyDescriptor(el, "value") || Object.getOwnPropertyDescriptor(proto, "value");
-        if (desc && typeof desc.set === "function") desc.set.call(el, value);
-        else el.value = value;
-    }
-
-    async function typeLikeUser(el, value, minDelay = 25, maxDelay = 75) {
-        if (!el) return;
-
-        el.focus();
-        await new Promise(requestAnimationFrame);
-
-        // clear first
-        setNativeValue(el, "");
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-
-        for (let i = 0; i < value.length; i++) {
-            const next = value.slice(0, i + 1);
-            setNativeValue(el, next);
-
-            const ch = value[i];
-            el.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true }));
-            el.dispatchEvent(new KeyboardEvent("keypress", { key: ch, bubbles: true }));
-            el.dispatchEvent(new Event("input", { bubbles: true }));
-            el.dispatchEvent(new KeyboardEvent("keyup", { key: ch, bubbles: true }));
-
-            if (typeof el.setSelectionRange === "function") el.setSelectionRange(next.length, next.length);
-
-            await S(randInt(minDelay, maxDelay));
-        }
-
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        if (typeof el.setSelectionRange === "function") el.setSelectionRange(value.length, value.length);
-    }
-
-    function findButtonContainingSvg(root, svgSelector) {
-        if (!root) return null;
-        return Array.from(root.querySelectorAll("button")).find((b) => b.querySelector(svgSelector)) || null;
-    }
-
-    // =========================================================
-    // Overlay removal guard
-    // =========================================================
-    function isBlockingAdOverlay(el) {
-        if (!(el instanceof HTMLElement)) return false;
-        const c = el.classList;
-        return (
-            c.contains("fixed") &&
-            c.contains("top-0") &&
-            c.contains("left-0") &&
-            c.contains("w-screen") &&
-            c.contains("h-screen") &&
-            c.contains("bg-white") &&
-            c.contains("bg-opacity-75") &&
-            c.contains("z-50") &&
-            c.contains("flex") &&
-            c.contains("items-center")
-        );
-    }
-
-    function removeAdOverlaysOnce(panelRoot) {
-        const overlays = Array.from(document.querySelectorAll("div.fixed.z-50")).filter(isBlockingAdOverlay);
-        if (!overlays.length) return 0;
-
-        overlays.forEach((el) => {
-            try {
-                el.remove();
-            } catch {
-                el.style.display = "none";
-                el.style.pointerEvents = "none";
-                el.style.opacity = "0";
-            }
-        });
-
-        if (panelRoot) panelLog(panelRoot, "info", `Removed overlay(s): ${overlays.length}`);
-        return overlays.length;
-    }
-
-    function startAdOverlayGuard(panelRoot) {
-        if (window.__cl_ad_guard_started__) return;
-        window.__cl_ad_guard_started__ = true;
-
-        removeAdOverlaysOnce(panelRoot);
-
-        const mo = new MutationObserver(() => removeAdOverlaysOnce(panelRoot));
-        mo.observe(document.documentElement, { childList: true, subtree: true });
-
-        if (panelRoot) panelLog(panelRoot, "info", "Ad overlay guard started");
-    }
-
-    // =========================================================
-    // waitAppReady()
-    // =========================================================
-    async function waitAppReady(panelRoot) {
-        removeAdOverlaysOnce(panelRoot);
-
-        const okRoot = await retryWait(() => document.querySelector(CFG.mountSel), 6, delayLoadMs);
-        if (!okRoot) return false;
-
-        removeAdOverlaysOnce(panelRoot);
-
-        for (let i = 0; i < 4; i++) {
-            const ok = await W(() => {
-                removeAdOverlaysOnce(panelRoot);
-                const overlay =
-                      document.querySelector("[role='progressbar']") ||
-                      document.querySelector(".spinner") ||
-                      document.querySelector(".loading") ||
-                      document.querySelector(".overlay");
-                return overlay ? null : true;
-            }, { timeoutMs: delayLoadMs() });
-
-            if (ok) break;
-            await S(delayInteractionMs());
-        }
-
-        await S(delayInteractionMs());
-        return true;
-    }
+        reset() {
+            this.busy = false;
+            // keep paused state
+        },
+    };
 
     // =========================================================
     // Notifications
@@ -373,6 +225,94 @@
     }
 
     // =========================================================
+    // Pacing + Human click
+    // =========================================================
+    let __cl_lastActionAt = 0;
+
+    async function pace(minGapMs) {
+        const gap = typeof minGapMs === "number" ? minGapMs : delayInteractionMs();
+        const now = Date.now();
+        const wait = __cl_lastActionAt + gap - now;
+        if (wait > 0) await S(wait);
+        __cl_lastActionAt = Date.now();
+    }
+
+    async function clickHumanPaced(el) {
+        if (!el) return false;
+        await pace();
+
+        try {
+            el.scrollIntoView({ block: "center", inline: "center" });
+        } catch {}
+
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width * (0.30 + Math.random() * 0.40);
+        const y = r.top + r.height * (0.30 + Math.random() * 0.40);
+
+        const win = el.ownerDocument?.defaultView || document.defaultView;
+        const ev = (t) =>
+            new MouseEvent(t, {
+                bubbles: true,
+                cancelable: true,
+                view: win,
+                clientX: x,
+                clientY: y,
+            });
+
+        el.dispatchEvent(ev("mousemove"));
+        el.dispatchEvent(ev("mouseover"));
+        el.dispatchEvent(ev("mouseenter"));
+        el.dispatchEvent(ev("mousedown"));
+        await S(randInt(35, 120));
+        el.dispatchEvent(ev("mouseup"));
+        el.dispatchEvent(ev("click"));
+        return true;
+    }
+
+    // =========================================================
+    // Native input typing (for autocomplete)
+    // =========================================================
+    function setNativeValue(el, value) {
+        if (!el) return;
+        const proto = Object.getPrototypeOf(el);
+        const desc = Object.getOwnPropertyDescriptor(el, "value") || Object.getOwnPropertyDescriptor(proto, "value");
+        if (desc && typeof desc.set === "function") desc.set.call(el, value);
+        else el.value = value;
+    }
+
+    async function typeLikeUser(el, value, minDelay = 25, maxDelay = 75) {
+        if (!el) return;
+
+        el.focus();
+        await new Promise(requestAnimationFrame);
+
+        setNativeValue(el, "");
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+
+        for (let i = 0; i < value.length; i++) {
+            const next = value.slice(0, i + 1);
+            setNativeValue(el, next);
+
+            const ch = value[i];
+            el.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent("keypress", { key: ch, bubbles: true }));
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent("keyup", { key: ch, bubbles: true }));
+
+            if (typeof el.setSelectionRange === "function") el.setSelectionRange(next.length, next.length);
+            await S(randInt(minDelay, maxDelay));
+        }
+
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        if (typeof el.setSelectionRange === "function") el.setSelectionRange(value.length, value.length);
+    }
+
+    function findButtonContainingSvg(root, svgSelector) {
+        if (!root) return null;
+        return Array.from(root.querySelectorAll("button")).find((b) => b.querySelector(svgSelector)) || null;
+    }
+
+    // =========================================================
     // UI
     // =========================================================
     function todayDay() {
@@ -400,58 +340,29 @@
         if (el) el.textContent = text;
     }
 
-    function injectMinimizeIfMissing(root) {
-    if (!root) return;
+    function applyMinState(root) {
+        const body = $("#cl_ui_body", root);
+        const btnMin = $("#cl_btn_min", root);
+        if (!body || !btnMin) return;
 
-    // already present
-    if (root.querySelector("#cl_btn_min")) return;
-
-    const actions = root.querySelector("#cl_ui_actions");
-    const body = root.querySelector("#cl_ui_body");
-    if (!actions || !body) return;
-
-    const btnMin = document.createElement("button");
-    btnMin.type = "button";
-    btnMin.id = "cl_btn_min";
-
-    // style identical to mkBtn(...)
-    btnMin.style.height = "34px";
-    btnMin.style.padding = "0 14px";
-    btnMin.style.borderRadius = "10px";
-    btnMin.style.border = "1px solid rgba(16, 6, 159, 0.25)";
-    btnMin.style.background = "white";
-    btnMin.style.color = "#10069f";
-    btnMin.style.font = "13px/1 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif";
-    btnMin.style.cursor = "pointer";
-    btnMin.style.display = "inline-flex";
-    btnMin.style.alignItems = "center";
-
-    // insert before Reset if possible
-    const resetBtn = actions.querySelector("#cl_btn_reset");
-    if (resetBtn) actions.insertBefore(btnMin, resetBtn);
-    else actions.appendChild(btnMin);
-
-    let minimized = localStorage.getItem("cl_ui_minimized") === "1";
-
-    const applyMinState = () => {
+        const minimized = localStorage.getItem("cl_ui_minimized") === "1";
         body.style.display = minimized ? "none" : "flex";
         btnMin.textContent = minimized ? "Expand" : "Minimize";
-    };
+    }
 
-    applyMinState();
+    function applyPauseState(root) {
+        const btnPause = $("#cl_btn_pause", root);
+        if (!btnPause) return;
 
-    btnMin.addEventListener("click", () => {
-        minimized = !minimized;
-        localStorage.setItem("cl_ui_minimized", minimized ? "1" : "0");
-        applyMinState();
-    });
-}
+        btnPause.textContent = Runner.paused ? "Resume" : "Pause";
+        btnPause.style.opacity = Runner.paused ? "0.85" : "1";
+    }
 
-
-    function ensureUI(mount) {
+    function ensureUI(mountEl) {
         let root = document.getElementById(CFG.uiId);
         if (root) {
-            injectMinimizeIfMissing(root);
+            applyMinState(root);
+            applyPauseState(root);
             return root;
         }
 
@@ -472,7 +383,6 @@
 
         const mkSelect = (id, label, opts, defVal) => {
             const wrap = document.createElement("div");
-            
             wrap.style.display = "flex";
             wrap.style.flexDirection = "column";
             wrap.style.gap = "4px";
@@ -545,27 +455,25 @@
         title.style.fontWeight = "800";
 
         const actions = document.createElement("div");
-        actions.id = "cl_ui_actions";
         actions.style.display = "flex";
         actions.style.gap = "8px";
         actions.style.flexWrap = "wrap";
 
         const btnGo = mkBtn("GO", true);
         const btnNext = mkBtn("Next step", false);
-        const btnReset = mkBtn("Reset", false);
+        const btnPause = mkBtn(Runner.paused ? "Resume" : "Pause", false);
         const btnMin = mkBtn("Minimize", false);
+        const btnReset = mkBtn("Reset", false);
 
         btnGo.id = "cl_btn_go";
         btnNext.id = "cl_btn_next";
-        btnReset.id = "cl_btn_reset";
+        btnPause.id = "cl_btn_pause";
         btnMin.id = "cl_btn_min";
-
-        btnGo.id = "cl_btn_go";
-        btnNext.id = "cl_btn_next";
         btnReset.id = "cl_btn_reset";
 
         actions.appendChild(btnGo);
         actions.appendChild(btnNext);
+        actions.appendChild(btnPause);
         actions.appendChild(btnMin);
         actions.appendChild(btnReset);
 
@@ -595,7 +503,6 @@
         status.style.font = "12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif";
         status.style.color = "#10069f";
         status.style.opacity = "0.9";
-
         footer.appendChild(status);
 
         const body = document.createElement("div");
@@ -606,43 +513,190 @@
 
         body.appendChild(grid);
         body.appendChild(footer);
-
-        // move log inside body (so it hides when minimized)
         panelEnsureLog(body);
 
         wrap.appendChild(top);
         wrap.appendChild(body);
-
         root.appendChild(wrap);
-        mount.insertBefore(root, mount.firstChild);
 
-        let minimized = localStorage.getItem("cl_ui_minimized") === "1";
+        mountEl.insertBefore(root, mountEl.firstChild);
 
-        const applyMinState = () => {
-            const bodyEl = body; // from the snippet above
-            if (!bodyEl) return;
+        // Minimize binding
+        if (!btnMin.dataset.bound) {
+            btnMin.dataset.bound = "1";
+            btnMin.addEventListener("click", () => {
+                const minimized = localStorage.getItem("cl_ui_minimized") === "1";
+                localStorage.setItem("cl_ui_minimized", minimized ? "0" : "1");
+                applyMinState(root);
+            });
+        }
 
-            bodyEl.style.display = minimized ? "none" : "flex";
-            btnMin.textContent = minimized ? "Expand" : "Minimize";
-        };
+        // Pause binding
+        if (!btnPause.dataset.bound) {
+            btnPause.dataset.bound = "1";
+            btnPause.addEventListener("click", () => {
+                Runner.togglePaused();
+                applyPauseState(root);
+                setStatus(Runner.paused ? "Paused" : "Idle");
+                notify(mountEl, Runner.paused ? "Paused" : "Resumed");
+            });
+        }
 
-        applyMinState();
+        // Reset binding
+        if (!btnReset.dataset.bound) {
+            btnReset.dataset.bound = "1";
+            btnReset.addEventListener("click", () => {
+                Runner.reset();
+                setStatus("Idle (reset)");
+                panelAction(body, "Idle (reset)");
+                panelLog(body, "info", "Runner reset");
+                notify(mountEl, "runner reset");
+            });
+        }
 
-        btnMin.addEventListener("click", () => {
-            minimized = !minimized;
-            localStorage.setItem("cl_ui_minimized", minimized ? "1" : "0");
-            applyMinState();
-        });
-
-        btnReset.addEventListener("click", () => {
-            Runner.reset();
-            setStatus("Idle (reset)");
-            panelAction(wrap, "Idle (reset)");
-            panelLog(wrap, "info", "Runner reset");
-            notify(mount, "runner reset");
-        });
+        applyMinState(root);
+        applyPauseState(root);
 
         return root;
+    }
+
+    // =========================================================
+    // LOGIN GUARD (desktop + mobile)
+    // =========================================================
+    function findLoginInHeader(scope = document) {
+        const nav = scope.querySelector(".header__nav");
+        if (!nav) return null;
+
+        const candidates = Array.from(nav.querySelectorAll("a.header__link.cursor-pointer"));
+        return candidates.find((a) => norm(a.innerText).toLowerCase() === "login") || null;
+    }
+
+    function findMobileMenuButton(scope = document) {
+        return scope.querySelector("button.mobile-menu-button") || null;
+    }
+
+    function findVisibleLoginAnywhere(scope = document) {
+        const candidates = Array.from(scope.querySelectorAll("a,button,[role='button']"));
+        return (
+            candidates.find((el) => {
+                if (!visible(el)) return false;
+                return norm(el.innerText).toLowerCase() === "login";
+            }) || null
+        );
+    }
+
+    async function openMobileMenuIfNeeded(panel) {
+        const menuBtn = findMobileMenuButton(document);
+        if (!menuBtn || !visible(menuBtn)) return false;
+
+        if (findVisibleLoginAnywhere(document)) return true;
+
+        panelLog(panel, "info", "Mobile menu button detected -> opening menu");
+        await clickHumanPaced(menuBtn);
+        await S(250);
+        return true;
+    }
+
+    async function guardLoginIfPresent(container, panel) {
+        const headerLogin = findLoginInHeader(document);
+        if (headerLogin && visible(headerLogin)) {
+            panelLog(panel, "info", "Login button detected (desktop header) -> clicking");
+            notify(container, "Login detected -> opening login");
+            await clickHumanPaced(headerLogin);
+            return true;
+        }
+
+        await openMobileMenuIfNeeded(panel);
+
+        const loginAfterMenu = findVisibleLoginAnywhere(document);
+        if (loginAfterMenu) {
+            panelLog(panel, "info", "Login button detected (mobile menu) -> clicking");
+            notify(container, "Login detected -> opening login");
+            await clickHumanPaced(loginAfterMenu);
+            return true;
+        }
+
+        return false;
+    }
+
+    // =========================================================
+    // Overlay removal guard
+    // =========================================================
+    function isBlockingAdOverlay(el) {
+        if (!(el instanceof HTMLElement)) return false;
+        const c = el.classList;
+        return (
+            c.contains("fixed") &&
+            c.contains("top-0") &&
+            c.contains("left-0") &&
+            c.contains("w-screen") &&
+            c.contains("h-screen") &&
+            c.contains("bg-white") &&
+            c.contains("bg-opacity-75") &&
+            c.contains("z-50") &&
+            c.contains("flex") &&
+            c.contains("items-center")
+        );
+    }
+
+    function removeAdOverlaysOnce(panelRoot) {
+        const overlays = Array.from(document.querySelectorAll("div.fixed.z-50")).filter(isBlockingAdOverlay);
+        if (!overlays.length) return 0;
+
+        overlays.forEach((el) => {
+            try {
+                el.remove();
+            } catch {
+                el.style.display = "none";
+                el.style.pointerEvents = "none";
+                el.style.opacity = "0";
+            }
+        });
+
+        if (panelRoot) panelLog(panelRoot, "info", `Removed overlay(s): ${overlays.length}`);
+        return overlays.length;
+    }
+
+    function startAdOverlayGuard(panelRoot) {
+        if (window.__cl_ad_guard_started__) return;
+        window.__cl_ad_guard_started__ = true;
+
+        removeAdOverlaysOnce(panelRoot);
+
+        const mo = new MutationObserver(() => removeAdOverlaysOnce(panelRoot));
+        mo.observe(document.documentElement, { childList: true, subtree: true });
+
+        if (panelRoot) panelLog(panelRoot, "info", "Ad overlay guard started");
+    }
+
+    // =========================================================
+    // waitAppReady()
+    // =========================================================
+    async function waitAppReady(panelRoot) {
+        removeAdOverlaysOnce(panelRoot);
+
+        const okRoot = await retryWait(() => document.querySelector(CFG.mountSel), 6, delayLoadMs);
+        if (!okRoot) return false;
+
+        removeAdOverlaysOnce(panelRoot);
+
+        for (let i = 0; i < 4; i++) {
+            const ok = await W(() => {
+                removeAdOverlaysOnce(panelRoot);
+                const overlay =
+                    document.querySelector("[role='progressbar']") ||
+                    document.querySelector(".spinner") ||
+                    document.querySelector(".loading") ||
+                    document.querySelector(".overlay");
+                return overlay ? null : true;
+            }, { timeoutMs: delayLoadMs() });
+
+            if (ok) break;
+            await S(delayInteractionMs());
+        }
+
+        await S(delayInteractionMs());
+        return true;
     }
 
     // =========================================================
@@ -698,9 +752,9 @@
 
         const dropdown = await WV(
             () =>
-            document.querySelector(
-                ".flex.absolute.top-full.left-0.w-full.z-50.bg-white.rounded-b-xl.max-h-96.overflow-y-scroll.border.border-solid"
-            ),
+                document.querySelector(
+                    ".flex.absolute.top-full.left-0.w-full.z-50.bg-white.rounded-b-xl.max-h-96.overflow-y-scroll.border.border-solid"
+                ),
             { timeoutMs: delayLoadMs() }
         );
 
@@ -868,7 +922,6 @@
         let btn = findSearchBtn(wrapper);
         if (!btn) fail(container, panel, "Search button (.search-button__inner) not found");
 
-        // If inner div, click closest button
         if (btn && btn.tagName !== "BUTTON") {
             const b2 = btn.closest("button");
             if (b2) btn = b2;
@@ -913,7 +966,7 @@
         await S(delayInteractionMs());
         notify(container, "Outward selected");
 
-        await S(300); // required delay between outward-results and return-results
+        await S(300);
 
         panelAction(panel, "Results: selecting return (first card__select)");
         const rSel = ret.querySelector("div.card div.card__select");
@@ -926,12 +979,13 @@
         const contBtn = await retryWait(() => {
             const scope = document.querySelector("div.basket") || document.querySelector(".basket_footer") || document;
             const btns = Array.from(scope.querySelectorAll("button"));
-            const b = btns.find((x) => {
-                if (!visible(x)) return false;
-                const t = norm(x.textContent).toLowerCase();
-                return t === "continue" || (t.includes("continue") && !t.includes("billing"));
-            });
-            return b || null;
+            return (
+                btns.find((x) => {
+                    if (!visible(x)) return false;
+                    const t = norm(x.textContent).toLowerCase();
+                    return t === "continue" || (t.includes("continue") && !t.includes("billing"));
+                }) || null
+            );
         }, 8, delayLoadMs);
 
         if (!contBtn) fail(container, panel, "Continue button not found on results page");
@@ -946,8 +1000,7 @@
         const btn = await retryWait(() => {
             const scope = document.querySelector(".basket_footer") || document;
             const all = Array.from(scope.querySelectorAll("button"));
-            const b = all.find((x) => visible(x) && norm(x.textContent).toLowerCase().includes("proceed to checkout"));
-            return b || null;
+            return all.find((x) => visible(x) && norm(x.textContent).toLowerCase().includes("proceed to checkout")) || null;
         }, 8, delayLoadMs);
 
         if (!btn) fail(container, panel, "Proceed To checkout button not found");
@@ -970,8 +1023,7 @@
         const cont = await retryWait(() => {
             const scope = document.querySelector(".basket_footer") || document;
             const btns = Array.from(scope.querySelectorAll("button"));
-            const b = btns.find((x) => visible(x) && /continue to billing info/i.test(norm(x.textContent)));
-            return b || null;
+            return btns.find((x) => visible(x) && /continue to billing info/i.test(norm(x.textContent))) || null;
         }, 8, delayLoadMs);
 
         if (!cont) fail(container, panel, "Continue to billing info button not found (passengers)");
@@ -984,27 +1036,15 @@
         panelLog(panel, "info", "Finding Continue to payment info button");
 
         const cont = await retryWait(() => {
-            // prefer the footer area (where these buttons live)
             const scope = document.querySelector(".basket_footer") || document;
-
-            // keep it tolerant: grab all buttons, then filter by text
             const btns = Array.from(scope.querySelectorAll("button"));
-            const b = btns.find((x) => {
-                if (!visible(x)) return false;
-
-                // innerText tends to match what user sees (better than textContent with SVG noise)
-                const t = norm(x.innerText).toLowerCase();
-
-                // EXACT target:
-                if (t.includes("continue to payment info")) return true;
-
-                // optional fallback if they A/B test wording:
-                // return /continue to (payment|billing) info/i.test(t);
-
-                return false;
-            });
-
-            return b || null;
+            return (
+                btns.find((x) => {
+                    if (!visible(x)) return false;
+                    const t = norm(x.innerText).toLowerCase();
+                    return t.includes("continue to payment info");
+                }) || null
+            );
         }, 8, delayLoadMs);
 
         if (!cont) fail(container, panel, "Continue to payment info button not found (details)");
@@ -1013,21 +1053,28 @@
     }
 
     // =========================================================
-    // Runner (Next / GO)
+    // runOne / runGo
     // =========================================================
-    const Runner = {
-        busy: false,
-        reset() {
-            this.busy = false;
-        },
-    };
-
     async function runOne(container, panel) {
+        if (Runner.paused) {
+            panelAction(panel, "PAUSED");
+            panelLog(panel, "info", "Paused by user. No action taken.");
+            notify(container, "Paused");
+            return STOP;
+        }
+
         panelLog(panel, "info", "waitAppReady()");
         const ready = await waitAppReady(panel);
         if (!ready) fail(container, panel, "App not ready (root/overlay)");
 
-        const st = getSettings();
+        // Login guard (always checked)
+        const loginClicked = await guardLoginIfPresent(container, panel);
+        if (loginClicked) {
+            panelAction(panel, "STOP: login required");
+            panelLog(panel, "info", "Automation stopped: user must login manually.");
+            return STOP;
+        }
+
         const page = pageKey();
         panelLog(panel, "info", `Page detected: ${page}`);
 
@@ -1037,6 +1084,8 @@
             notify(container, "Payment reached: manual step");
             return STOP;
         }
+
+        const st = getSettings();
 
         if (page === "search") {
             const wrapper = await retryWait(() => findWrapper(), 6, delayLoadMs);
@@ -1055,9 +1104,9 @@
             const passBtn = findPassengersBtn(wrapper);
             const searchBtn = findSearchBtn(wrapper);
 
-            if (depBtn && depBtn.textContent.includes("Departure Date")) return step_depart(container, panel, wrapper, st);
-            if (retBtn && retBtn.textContent.includes("Add A Return")) return step_return(container, panel, wrapper, st);
-            if (passBtn && passBtn.textContent.includes("Select Passengers")) return step_passengers_searchpage(container, panel, wrapper);
+            if (depBtn?.textContent?.includes("Departure Date")) return step_depart(container, panel, wrapper, st);
+            if (retBtn?.textContent?.includes("Add A Return")) return step_return(container, panel, wrapper, st);
+            if (passBtn?.textContent?.includes("Select Passengers")) return step_passengers_searchpage(container, panel, wrapper);
             if (searchBtn) return step_search(container, panel, wrapper);
 
             panelLog(panel, "error", "No actionable step found on search page");
@@ -1080,13 +1129,20 @@
         notify(container, "GO");
 
         for (let i = 0; i < CFG.goMaxHops; i++) {
-            panelLog(panel, "info", `GO hop ${i + 1}: waitAppReady()`);
+            if (Runner.paused) {
+                panelAction(panel, "PAUSED");
+                panelLog(panel, "info", "GO stopped: paused by user.");
+                notify(container, "GO paused");
+                break;
+            }
+
+            panelLog(panel, "info", `GO hop ${i + 1}: runOne()`);
 
             const before = location.href;
             const res = await runOne(container, panel);
 
             if (res === STOP) {
-                panelLog(panel, "info", "GO stopped at payment page.");
+                panelLog(panel, "info", "GO stopped (STOP returned).");
                 break;
             }
 
@@ -1107,8 +1163,7 @@
 
         notifHost(mountEl);
         const ui = ensureUI(mountEl);
-        const panel = ui.querySelector("#cl_ui_body") || ui.querySelector("div");
-        panelEnsureLog(panel);
+        const panel = ui.querySelector("#cl_ui_body") || ui;
 
         startAdOverlayGuard(panel);
 
@@ -1121,6 +1176,12 @@
             btnGo.dataset.bound = "1";
             btnGo.addEventListener("click", async () => {
                 if (Runner.busy) return;
+
+                if (Runner.paused) {
+                    notify(mountEl, "Paused (click Resume first)");
+                    return;
+                }
+
                 Runner.busy = true;
                 try {
                     setStatus("GO running…");
@@ -1139,13 +1200,18 @@
             btnNext.dataset.bound = "1";
             btnNext.addEventListener("click", async () => {
                 if (Runner.busy) return;
+
+                if (Runner.paused) {
+                    notify(mountEl, "Paused (click Resume first)");
+                    return;
+                }
+
                 Runner.busy = true;
                 try {
                     setStatus("Next running…");
                     panelAction(panel, "Next: executing current step");
                     const res = await runOne(mountEl, panel);
-                    if (res === STOP) setStatus("Stopped at payment (manual)");
-                    else setStatus("Next done");
+                    setStatus(res === STOP ? "Stopped" : "Next done");
                     panelAction(panel, "Next: done");
                 } catch (e) {
                     setStatus(`Error: ${e.message}`);
@@ -1156,8 +1222,8 @@
             });
         }
 
-        setStatus("Idle");
-        panelAction(panel, "Idle");
+        setStatus(Runner.paused ? "Paused" : "Idle");
+        panelAction(panel, Runner.paused ? "PAUSED" : "Idle");
     }
 
     function watchSPA() {
